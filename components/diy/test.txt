@@ -1,0 +1,195 @@
+// components/RentedNFTCard.tsx
+"use client";
+
+import { useState, useRef, useEffect } from "react";
+import Link from "next/link";
+import { notification } from "~~/utils/scaffold-eth";
+import { useScaffoldContractWrite } from "~~/hooks/scaffold-eth";
+import axios from "axios";
+
+interface NFTInfo {
+  tokenId: number;
+  image: string;
+  name: string;
+  owner: string;
+  isListed: boolean;
+  rentalInfo: {
+    dailyRentPrice: string;
+    maxDuration: number;
+    renter: string;
+    startTime: number;
+    duration: number;
+    active: boolean;
+  };
+}
+
+interface RentedNFTCardProps {
+  nft: NFTInfo;
+  connectedAddress?: string; // 新增：接收当前连接的地址
+  onRentalEnded?: (tokenId: number) => void; // 新增：归还成功后的回调
+}
+
+export const RentedNFTCard: React.FC<RentedNFTCardProps> = ({ nft, connectedAddress, onRentalEnded }) => {
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [remainingTime, setRemainingTime] = useState<string>("");
+
+  // 调用智能合约的 endRental 方法
+  const { writeAsync: endRental } = useScaffoldContractWrite({
+    contractName: "YourCollectible", // 请替换为你的租赁合约名称
+    functionName: "endRental",
+    args: [BigInt(nft.tokenId)],
+  });
+
+  // 计算租赁剩余时间
+  const calculateRemainingTime = () => {
+    try {
+      if (
+        !nft.rentalInfo ||
+        typeof nft.rentalInfo.startTime !== "number" ||
+        typeof nft.rentalInfo.duration !== "number" ||
+        !nft.rentalInfo.active
+      ) {
+        return "租赁信息无效";
+      }
+
+      const startTime = Number(nft.rentalInfo.startTime) * 1000;
+      const duration = Number(nft.rentalInfo.duration) * 24 * 60 * 60 * 1000; // 转换为毫秒
+      const endTime = startTime + duration;
+      const now = Date.now();
+      const remainingTimeMs = endTime - now;
+
+      if (remainingTimeMs <= 0) {
+        return "租赁已到期";
+      }
+
+      const days = Math.floor(remainingTimeMs / (1000 * 60 * 60 * 24));
+      const hours = Math.floor((remainingTimeMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+      const minutes = Math.floor((remainingTimeMs % (1000 * 60 * 60)) / (1000 * 60));
+
+      if (days > 0) {
+        return `${days}天 ${hours}小时`;
+      } else if (hours > 0) {
+        return `${hours}小时 ${minutes}分钟`;
+      } else {
+        return `${minutes}分钟`;
+      }
+    } catch (error) {
+      console.error("计算租赁时间时出错:", error);
+      return "计算时间出错";
+    }
+  };
+
+  // 动态更新剩余时间
+  useEffect(() => {
+    setRemainingTime(calculateRemainingTime());
+    const interval = setInterval(() => {
+      setRemainingTime(calculateRemainingTime());
+    }, 60000); // 每分钟更新一次
+    return () => clearInterval(interval);
+  }, [nft.rentalInfo]);
+
+  // 3D 倾斜效果
+  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!cardRef.current) return;
+
+    const rect = cardRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const centerX = rect.width / 2;
+    const centerY = rect.height / 2;
+
+    const rotateX = (y - centerY) / 20;
+    const rotateY = (centerX - x) / 20;
+
+    cardRef.current.style.transform = `perspective(1000px) rotateX(${rotateX}deg) rotateY(${rotateY}deg)`;
+  };
+
+  const handleMouseLeave = () => {
+    if (!cardRef.current) return;
+    cardRef.current.style.transform = "perspective(1000px) rotateX(0deg) rotateY(0deg)";
+  };
+
+  // 处理归还 NFT
+  const handleEndRental = async () => {
+    if (!connectedAddress) {
+      notification.error({ message: "请连接钱包" });
+      return;
+    }
+
+    if (nft.rentalInfo.renter.toLowerCase() !== connectedAddress.toLowerCase()) {
+      notification.error({ message: "只有租赁者可以归还 NFT" });
+      return;
+    }
+
+    try {
+      // 调用智能合约的 endRental 方法
+      await endRental({
+        args: [BigInt(nft.tokenId)],
+      });
+
+      // 调用后端 API 重置租赁信息
+      await axios.post("http://localhost:3050/endRental", {
+        tokenId: nft.tokenId,
+      });
+
+      // 通知父组件（例如 MyNFTPage）移除该 NFT
+      if (onRentalEnded) {
+        onRentalEnded(nft.tokenId);
+      }
+
+      notification.success({ message: "NFT 归还成功" });
+    } catch (error) {
+      console.error("归还 NFT 失败:", error);
+      notification.error({ message: "归还 NFT 失败", description: error.message });
+    }
+  };
+
+  return (
+    <div
+      ref={cardRef}
+      className="group bg-white rounded-xl shadow-md overflow-hidden hover:shadow-xl transition-all duration-300"
+      onMouseMove={handleMouseMove}
+      onMouseLeave={handleMouseLeave}
+      style={{ transition: "transform 0.1s ease" }}
+    >
+      <Link href={`/nft/${nft.tokenId}`}>
+        <div className="relative">
+          <img
+            src={nft.image}
+            alt={nft.name}
+            className="w-full h-48 object-cover transition-transform duration-300 group-hover:scale-105"
+            onError={(e) => (e.currentTarget.src = "/placeholder-image.png")}
+          />
+          <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-10 transition-opacity duration-300"></div>
+        </div>
+        <div className="p-5">
+          <h2 className="text-xl font-semibold text-gray-800 mb-2 group-hover:text-blue-600 transition-colors duration-200">
+            {nft.name}
+          </h2>
+          <p className="text-gray-600 text-sm">
+            <span className="font-medium">Token ID:</span> {nft.tokenId}
+          </p>
+          <p className="text-gray-600 text-sm">
+            <span className="font-medium">拥有者:</span>{" "}
+            {nft.owner.slice(0, 6)}...{nft.owner.slice(-4)}
+          </p>
+          <p className="text-gray-600 text-sm">
+            <span className="font-medium">每日租金:</span> {nft.rentalInfo?.dailyRentPrice || "未设置"} ETH
+          </p>
+          <p className="text-gray-600 text-sm">
+            <span className="font-medium">剩余时间:</span> {remainingTime}
+          </p>
+        </div>
+      </Link>
+      <div className="p-5">
+        <button
+          onClick={handleEndRental}
+          className="btn btn-primary btn-sm w-full"
+          disabled={remainingTime === "租赁已到期" || remainingTime === "租赁信息无效"}
+        >
+          归还 NFT
+        </button>
+      </div>
+    </div>
+  );
+};
